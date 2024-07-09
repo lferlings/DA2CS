@@ -8,7 +8,6 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from tqdm import tqdm
 import wandb
-from torchsummary import summary
 import torch.nn.functional as F
 
 # Define the SiameseNetwork model
@@ -211,7 +210,6 @@ if __name__ == '__main__':
 
     # Model, criterion, optimizer, and scheduler setup
     model = SiameseNetwork().to(device)
-    summary(model, [(1, 112, 112), (1, 112, 112)])
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.1)
