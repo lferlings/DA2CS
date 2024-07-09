@@ -11,38 +11,34 @@ import wandb
 from torchsummary import summary
 import torch.nn.functional as F
 
-from torch.utils.data import DataLoader, Dataset, ConcatDataset
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
+# Define the SiameseNetwork model
 class SiameseNetwork(nn.Module):
     def __init__(self):
         super(SiameseNetwork, self).__init__()
-        self.conv1 = nn.Conv2d(1, 8, kernel_size=3, padding=1)  # Input 112*112 * 8
-        self.bn1 = nn.BatchNorm2d(8)
+        self.conv1 = nn.Conv2d(1, 8, kernel_size=3, padding=1)  # Input 112 * 112 * 8
         self.conv2 = nn.Conv2d(8, 16, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(16)
         self.conv3 = nn.Conv2d(16, 24, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(24)
 
         self.fc1 = nn.Linear(24 * 14 * 14, 36)  # Calculating output size after convolutions
-        self.fc1komma5 = nn.Linear(36, 28)
-        self.fc2 = nn.Linear(28, 16)
-        self.fc3 = nn.Linear(16, 1)  # Output should be 1 for binary classification
+        self.fc2 = nn.Linear(36, 28)
+        self.fc3 = nn.Linear(28, 16)
+        self.fc4 = nn.Linear(16, 1)  # Output should be 1 for binary classification
         self.dropout = nn.Dropout(0.5)
+
+        # Total Params: 175625
 
     def forward_one(self, x):
         x = F.relu(self.conv1(x))  # input 112*112 * 8
-        x = F.max_pool2d(x, 2)  # 56*56 * 8
-        x = F.relu(self.conv2(x))  # 56*56*16
-        x = F.max_pool2d(x, 2)  # 28*28*16
-        x = F.relu(self.conv3(x))  # 28*28*24
-        x = F.max_pool2d(x, 2)  # 14*14*24
+        x = F.max_pool2d(x, 2)  # 56 * 56 * 8
+        x = F.relu(self.conv2(x))  # 56 * 56 * 16
+        x = F.max_pool2d(x, 2)  # 28 * 28 * 16
+        x = F.relu(self.conv3(x))  # 28 * 28 * 24
+        x = F.max_pool2d(x, 2)  # 14 * 14 * 24
+        
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
-        x = F.relu(self.fc1komma5(x))
         x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
         x = self.dropout(x)  # Applying dropout here
         return x
 
@@ -50,10 +46,10 @@ class SiameseNetwork(nn.Module):
         output1 = self.forward_one(input1)
         output2 = self.forward_one(input2)
         distance = torch.abs(output1 - output2)
-        output = self.fc3(distance)  # Applying sigmoid for binary classification
+        output = self.fc4(distance)  # Applying sigmoid for binary classification
         return output
 
-
+# Define the FaceDataset class
 class FaceDataset(Dataset):
     def __init__(self, image_folder, people_dirs, transform=None):
         self.image_folder = image_folder
@@ -96,6 +92,7 @@ class FaceDataset(Dataset):
 
         return img1, img2, torch.tensor(label, dtype=torch.float32)
 
+# Function to split dataset into train, validation, and test sets
 def split_dataset(image_folder, train_ratio=0.94, val_ratio=0.05, test_ratio=0.01):
     people_dirs = os.listdir(image_folder)
     random.shuffle(people_dirs)
@@ -109,6 +106,7 @@ def split_dataset(image_folder, train_ratio=0.94, val_ratio=0.05, test_ratio=0.0
 
     return train_dirs, val_dirs, test_dirs
 
+# Training function
 def train(model, train_loader, val_loader, criterion, optimizer, epochs=10):
     accumulation_steps = 4
     for epoch in range(epochs):
@@ -140,8 +138,9 @@ def train(model, train_loader, val_loader, criterion, optimizer, epochs=10):
             "val_accuracy": val_accuracy
         })
 
-        torch.save(model.state_dict(), f'networks/network_epoch{epoch}.pth')
+        torch.save(model.state_dict(), f'networks/siamese/network_epoch{epoch}.pth')
 
+# Evaluation function
 def evaluate(model, data_loader, criterion):
     model.eval()
     running_loss = 0.0
@@ -161,10 +160,11 @@ def evaluate(model, data_loader, criterion):
     return running_loss / len(data_loader), accuracy
 
 if __name__ == '__main__':
+    # Initialize Weights and Biases
     wandb.login()
-
     wandb.init(project='face-recognition-philip')
 
+    # Hyperparameters and device setup
     batch_size = 512
     learning_rate = 0.02
     epochs = 10
@@ -182,6 +182,7 @@ if __name__ == '__main__':
     print(f'Epochs: {epochs}')
     print(f'Device: {device}')
 
+    # Data augmentation and normalization
     transform = transforms.Compose([
         transforms.Resize((112, 112)),
         transforms.RandomHorizontalFlip(),
@@ -193,44 +194,34 @@ if __name__ == '__main__':
     image_folder = 'generated_images_10Kids_cropped'
     train_dirs, val_dirs, test_dirs = split_dataset(image_folder)
 
-    # Normal transform
     transform_normal = transforms.Compose([
         transforms.Resize((112, 112)),
         transforms.ToTensor()
     ])
     
-    
-    # Data augmentation and normalization
-    transform_data_augmentation = transforms.Compose([
-        transforms.Resize((112, 112)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-        transforms.ToTensor()
-    ])
-    
-    val_dataset = FaceDataset(image_folder, val_dirs, transform=transform_normal)  
+    # Create datasets and data loaders
+    val_dataset = FaceDataset(image_folder, val_dirs, transform=transform_normal)
     test_dataset = FaceDataset(image_folder, test_dirs, transform=transform_normal)
-    #train_dataset_data_augmentation = FaceDataset(image_folder, train_dirs, transform=transform_data_augmentation)
-    #train_dataset_normal =  FaceDataset(image_folder, train_dirs, transform=transform_normal)
-    
-    train_dataset = FaceDataset(image_folder, train_dirs, transform=transform_data_augmentation)
-    
-    cores = os.cpu_count()
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=cores, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=cores, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=cores, shuffle=False)
+    train_dataset = FaceDataset(image_folder, train_dirs, transform=transform)
 
+    cores = int(os.cpu_count() * 0.75)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=cores, shuffle=True, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=cores, shuffle=False, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=cores, shuffle=False, pin_memory=True)
+
+    # Model, criterion, optimizer, and scheduler setup
     model = SiameseNetwork().to(device)
     summary(model, [(1, 112, 112), (1, 112, 112)])
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.1)
-    scaler = torch.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler()
 
+    # Train the model
     train(model, train_loader, val_loader, criterion, optimizer, epochs=epochs)
 
+    # Evaluate the model on the test set
     test_loss, test_accuracy = evaluate(model, test_loader, criterion)
     print(f'Test Loss: {test_loss}, Test Accuracy: {test_accuracy}')
     wandb.log({"test_loss": test_loss, "test_accuracy": test_accuracy})
-    torch.save(model.state_dict(), 'networks/final_network.pth')
+    torch.save(model.state_dict(), 'networks/siamese/final_network.pth')

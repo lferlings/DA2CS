@@ -8,10 +8,9 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from tqdm import tqdm
 import wandb
-from torchsummary import summary
 import torch.nn.functional as F
 
-from torch.utils.data import DataLoader, Dataset, ConcatDataset
+from torch.utils.data import DataLoader, Dataset
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,6 +32,8 @@ class SiameseNetwork(nn.Module):
         self.fc3 = nn.Linear(28, 16)
         self.fc4 = nn.Linear(16, 1)  # Output should be 1 for binary classification
         self.dropout = nn.Dropout(0.5)
+        
+        # Total Params 190957
 
     def forward_one(self, x):
         x = F.relu(self.conv1(x))  # input 112*112 * 8
@@ -44,6 +45,7 @@ class SiameseNetwork(nn.Module):
         x = F.relu(self.conv5(x))  # 28*28*32
         x = F.relu(self.conv6(x))  # 28*28*24
         x = F.max_pool2d(x, 2)  # 14*14*24
+        
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
@@ -145,7 +147,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, epochs=10):
             "val_accuracy": val_accuracy
         })
 
-        torch.save(model.state_dict(), f'networks/network_epoch{epoch}.pth')
+        torch.save(model.state_dict(), f'networks/reverse/network_epoch{epoch}.pth')
 
 def evaluate(model, data_loader, criterion):
     model.eval()
@@ -216,18 +218,15 @@ if __name__ == '__main__':
     
     val_dataset = FaceDataset(image_folder, val_dirs, transform=transform_normal)  
     test_dataset = FaceDataset(image_folder, test_dirs, transform=transform_normal)
-    #train_dataset_data_augmentation = FaceDataset(image_folder, train_dirs, transform=transform_data_augmentation)
-    #train_dataset_normal =  FaceDataset(image_folder, train_dirs, transform=transform_normal)
     
     train_dataset = FaceDataset(image_folder, train_dirs, transform=transform_data_augmentation)
     
-    cores = os.cpu_count()
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=cores, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=cores, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=cores, shuffle=False)
+    cores = int(os.cpu_count() * 0.75)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=cores, shuffle=True, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=cores, shuffle=False, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=cores, shuffle=False, pin_memory=True)
 
     model = SiameseNetwork().to(device)
-    summary(model, [(1, 112, 112), (1, 112, 112)])
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.1)
@@ -238,4 +237,4 @@ if __name__ == '__main__':
     test_loss, test_accuracy = evaluate(model, test_loader, criterion)
     print(f'Test Loss: {test_loss}, Test Accuracy: {test_accuracy}')
     wandb.log({"test_loss": test_loss, "test_accuracy": test_accuracy})
-    torch.save(model.state_dict(), 'networks/final_network.pth')
+    torch.save(model.state_dict(), 'networks/reverse/final_network.pth')
