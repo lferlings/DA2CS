@@ -47,12 +47,11 @@ class SiameseNetwork(nn.Module):
         x = F.relu(self.fc2(x))
         return x
 
-    def forward(self, input1, input2, input3, input4):
+    def forward(self, input1, input2, input3):
         output1 = self.forward_one(input1)
         output2 = self.forward_one(input2)
         output3 = self.forward_one(input3)
-        output4 = self.forward_one(input4)
-        return output1, output2, output3, output4
+        return output1, output2, output3
     
 class QuadrupletLoss(nn.Module):
     def __init__(self, margin=1.0):
@@ -74,7 +73,7 @@ class FaceDataset(Dataset):
         self.image_folder = image_folder
         self.people_dirs = people_dirs
         self.transform = transform
-        self.quadruplets = []
+        self.triplets = []
         self._prepare_data()
 
     def _prepare_data(self):
@@ -94,31 +93,23 @@ class FaceDataset(Dataset):
                     neg_images1 = os.listdir(os.path.join(self.image_folder, neg_person1))
                     negative1 = os.path.join(self.image_folder, neg_person1, random.choice(neg_images1))
 
-                    neg_person2 = person_dir
-                    while neg_person2 == person_dir or neg_person2 == neg_person1:
-                        neg_person2 = random.choice(self.people_dirs)
-                    neg_images2 = os.listdir(os.path.join(self.image_folder, neg_person2))
-                    negative2 = os.path.join(self.image_folder, neg_person2, random.choice(neg_images2))
-
-                    self.quadruplets.append((anchor, positive, negative1, negative2))
+                    self.triplets.append((anchor, positive, negative1))
 
     def __len__(self):
-        return len(self.quadruplets)
+        return len(self.triplets)
 
     def __getitem__(self, idx):
-        anchor_path, positive_path, negative1_path, negative2_path = self.quadruplets[idx]
+        anchor_path, positive_path, negative1_path = self.triplets[idx]
         anchor = Image.open(anchor_path).convert('L')
         positive = Image.open(positive_path).convert('L')
         negative1 = Image.open(negative1_path).convert('L')
-        negative2 = Image.open(negative2_path).convert('L')
 
         if self.transform:
             anchor = self.transform(anchor)
             positive = self.transform(positive)
             negative1 = self.transform(negative1)
-            negative2 = self.transform(negative2)
 
-        return anchor, positive, negative1, negative2
+        return anchor, positive, negative1
 
 def split_dataset(image_folder, train_ratio=0.94, val_ratio=0.05, test_ratio=0.01):
     people_dirs = os.listdir(image_folder)
@@ -145,17 +136,17 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler, scal
         model.train()
         running_loss = 0.0
         with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/{epochs}", unit="batch") as pbar:
-            for i, (img1, img2, img3, img4) in enumerate(train_loader):
-                img1, img2, img3, img4 = img1.to(device), img2.to(device), img3.to(device), img4.to(device)
+            for i, (img1, img2, img3) in enumerate(train_loader):
+                img1, img2, img3 = img1.to(device), img2.to(device), img3.to(device)
 
                 optimizer.zero_grad()
 
-                with torch.cuda.amp.autocast(enabled=scaler is not None):
+                with torch.amp.autocast('cuda', enabled=scaler is not None):
                     # Pass all four inputs to the model
-                    output1, output2, output3, output4 = model(img1, img2, img3, img4)
+                    output1, output2, output3 = model(img1, img2, img3)
 
                     # Calculate loss
-                    loss = criterion(output1, output2, output3, output4)
+                    loss = criterion(output1, output2, output3)
 
                 if scaler is not None:
                     scaler.scale(loss).backward()
@@ -184,7 +175,7 @@ def train(model, train_loader, val_loader, criterion, optimizer, scheduler, scal
         })
 
         # Save the model
-        torch.save(model.state_dict(), f'./network_epoch{epoch}.pth')
+        torch.save(model.state_dict(), f'./triplet/network_epoch{epoch}.pth')
 
 # Evaluation function
 def evaluate(model, data_loader, criterion):
@@ -193,62 +184,23 @@ def evaluate(model, data_loader, criterion):
     correct = 0
     total = 0
     with torch.no_grad():
-        for img1, img2, img3, img4 in data_loader:
-            img1, img2, img3, img4 = img1.to(device), img2.to(device), img3.to(device), img4.to(device)
-            with torch.cuda.amp.autocast():
-                output1, output2, output3, output4 = model(img1, img2, img3, img4)
-                loss = criterion(output1, output2, output3, output4)
+        for img1, img2, img3 in data_loader:
+            img1, img2, img3 = img1.to(device), img2.to(device), img3.to(device)
+            with torch.amp.autocast('cuda'):
+                output1, output2, output3 = model(img1, img2, img3)
+                loss = criterion(output1, output2, output3)
             running_loss += loss.item()
 
             # Calculate accuracy (you can adjust this based on your task)
             distance_pos = F.pairwise_distance(output1, output2)
-            distance_neg = F.pairwise_distance(output3, output4)
+            distance_neg = F.pairwise_distance(output1, output3)
             predicted = (distance_pos < distance_neg).float()  # Adjust as per your task
             # Assuming label is 1 for positive pair and 0 for negative pair
-            correct += (predicted == 1).sum().item()
+            correct += (predicted == 1).sum().item() 
             total += img1.size(0)
 
     accuracy = correct / total
     return running_loss / len(data_loader), accuracy
-
-def predict_match(model, image1_path, image2_path, transform):
-    """
-    Predict if two images match or not using the Siamese Network model.
-
-    Args:
-        model (nn.Module): Trained Siamese Network model.
-        image1_path (str): Path to the first image.
-        image2_path (str): Path to the second image.
-        transform (torchvision.transforms.Compose): Transformation to be applied to the images.
-
-    Returns:
-        bool: True if the images match, False otherwise.
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.eval()
-    
-    # Load and transform the images
-    image1 = Image.open(image1_path).convert('L')
-    image2 = Image.open(image2_path).convert('L')
-    image1 = transform(image1).unsqueeze(0).to(device)
-    image2 = transform(image2).unsqueeze(0).to(device)
-    
-    # Get embeddings for both images
-    with torch.no_grad():
-        embedding1 = model.forward_one(image1)
-        embedding2 = model.forward_one(image2)
-    
-    # Calculate distance between embeddings
-    distance = F.pairwise_distance(embedding1, embedding2)
-    
-    # Define a threshold for matching (you may need to tune this value)
-    threshold = 1.0
-    
-    # Predict match or not
-    match = distance.item() < threshold
-    
-    return match
-
 
 if __name__ == '__main__':
     wandb.login()
@@ -259,7 +211,7 @@ if __name__ == '__main__':
     # Hyperparameters and setup
     batch_size = 256
     learning_rate = 0.02
-    epochs = 5
+    epochs = 25
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     wandb.config.update({
@@ -303,18 +255,19 @@ if __name__ == '__main__':
     val_dataset = FaceDataset(image_folder, val_dirs, transform=transform_normal)
     test_dataset = FaceDataset(image_folder, test_dirs, transform=transform_normal)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     # Model, loss, and optimizer
     model = SiameseNetwork().to(device)
-    summary(model, [(1, 112, 112), (1, 112, 112),(1, 112, 112),(1, 112, 112)])
+    model.load_state_dict(torch.load("network_epoch1.pth"))
+    summary(model, [(1, 112, 112), (1, 112, 112),(1, 112, 112)])
     #criterion = nn.BCEWithLogitsLoss()
-    criterion = QuadrupletLoss(margin=1.0)
+    criterion = nn.TripletMarginLoss(margin=1)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.1)
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
 
   
     # Train the model

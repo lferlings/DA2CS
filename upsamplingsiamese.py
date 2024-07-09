@@ -19,39 +19,43 @@ import torch.nn.functional as F
 class SiameseNetwork(nn.Module):
     def __init__(self):
         super(SiameseNetwork, self).__init__()
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(1, 8, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(8)
-        self.conv2 = nn.Conv2d(8, 16, kernel_size=5, padding=0)
-        self.bn2 = nn.BatchNorm2d(16)
-        self.conv3 = nn.Conv2d(16, 32, kernel_size=3, padding=0)
-        self.bn3 = nn.BatchNorm2d(32)
+        self.conv1 = nn.Conv2d(1, 8, kernel_size=3, padding=1)  # Input 112*112 * 8
+        self.conv2 = nn.Conv2d(8, 12, kernel_size=3, padding=1)
+        
+        self.conv3 = nn.Conv2d(12, 16, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(16, 24, kernel_size=3, padding=1)
+        
+        self.conv5 = nn.Conv2d(24, 32, kernel_size=3, padding=1)
+        self.conv6 = nn.Conv2d(32, 24, kernel_size=3, padding=1)
 
-        # Fully connected layers
-        self.fc1 = nn.Linear(32 * 12 * 12, 41)  # Updated to 32 * 12 * 12
-        self.fc1komma5 = nn.Linear(41,32)
-        self.fc2 = nn.Linear(32, 16)
-        self.fc3 = nn.Linear(16, 1)
+        self.fc1 = nn.Linear(24 * 14 * 14, 36)  # Calculating output size after convolutions
+        self.fc2 = nn.Linear(36, 28)
+        self.fc3 = nn.Linear(28, 16)
+        self.fc4 = nn.Linear(16, 1)  # Output should be 1 for binary classification
         self.dropout = nn.Dropout(0.5)
 
     def forward_one(self, x):
-        x = F.relu(self.conv1(x)) # 8 * 112 * 112
-        x = F.max_pool2d(x, 2)  # output size: (8, 56, 56)
-        x = F.relu(self.conv2(x)) # 16* 52 * 52
-        x = F.max_pool2d(x, 2)  # output size: (16, 26, 26)
-        x = F.relu(self.conv3(x)) # 32 * 24 * 24
-        x = F.max_pool2d(x, 2)  # output size: (32, 12, 12)
+        x = F.relu(self.conv1(x))  # input 112*112 * 8
+        x = F.relu(self.conv2(x)) # output 112*112* 12
+        x = F.max_pool2d(x, 2)  # 56*56 * 12
+        x = F.relu(self.conv3(x))  # 56*56*16
+        x = F.relu(self.conv4(x)) # 56*56*24
+        x = F.max_pool2d(x, 2)  # 28*28*24
+        x = F.relu(self.conv5(x))  # 28*28*32
+        x = F.relu(self.conv6(x))  # 28*28*24
+        x = F.max_pool2d(x, 2)  # 14*14*24
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
-        x = F.relu(self.fc1komma5(x))
         x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        x = self.dropout(x)  # Applying dropout here
         return x
 
     def forward(self, input1, input2):
         output1 = self.forward_one(input1)
         output2 = self.forward_one(input2)
         distance = torch.abs(output1 - output2)
-        output = self.fc3(distance)
+        output = self.fc4(distance)  # Applying sigmoid for binary classification
         return output
 
 
@@ -110,7 +114,7 @@ def split_dataset(image_folder, train_ratio=0.94, val_ratio=0.05, test_ratio=0.0
 
     return train_dirs, val_dirs, test_dirs
 
-def train(model, train_loader, val_loader, val_loader_aug, criterion, optimizer, epochs=10):
+def train(model, train_loader, val_loader, criterion, optimizer, epochs=10):
     accumulation_steps = 4
     for epoch in range(epochs):
         model.train()
@@ -133,20 +137,15 @@ def train(model, train_loader, val_loader, val_loader_aug, criterion, optimizer,
         scheduler.step()
         val_loss, val_accuracy = evaluate(model, val_loader, criterion)
         print(f"Epoch {epoch+1}/{epochs}, Train Loss: {running_loss/len(train_loader)}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}")
-        
-        val_loss_aug, val_accuracy_aug = evaluate(model, val_loader_aug, criterion)
-        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {running_loss/len(train_loader)}, Aug Val Loss: {val_loss_aug}, Aug Val Accuracy: {val_accuracy_aug}")
 
         wandb.log({
             "epoch": epoch + 1,
             "train_loss": running_loss / len(train_loader),
             "val_loss": val_loss,
-            "val_accuracy": val_accuracy,
-            "val_loss_aug": val_loss_aug,
-            "val_accuracy_aug": val_accuracy_aug
+            "val_accuracy": val_accuracy
         })
 
-        torch.save(model.state_dict(), f'networks_lennart/network_epoch{epoch}.pth')
+        torch.save(model.state_dict(), f'networks/network_epoch{epoch}.pth')
 
 def evaluate(model, data_loader, criterion):
     model.eval()
@@ -215,10 +214,8 @@ if __name__ == '__main__':
         transforms.ToTensor()
     ])
     
-    val_dataset = FaceDataset(image_folder, val_dirs, transform=transform_normal)
-    val_dataset_aug = FaceDataset(image_folder, val_dirs, transform=transform_data_augmentation)
+    val_dataset = FaceDataset(image_folder, val_dirs, transform=transform_normal)  
     test_dataset = FaceDataset(image_folder, test_dirs, transform=transform_normal)
-    test_dataset_aug = FaceDataset(image_folder, test_dirs, transform=transform_data_augmentation)
     #train_dataset_data_augmentation = FaceDataset(image_folder, train_dirs, transform=transform_data_augmentation)
     #train_dataset_normal =  FaceDataset(image_folder, train_dirs, transform=transform_normal)
     
@@ -228,8 +225,6 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=cores, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=cores, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=cores, shuffle=False)
-    val_loader_aug = DataLoader(val_dataset_aug, batch_size=batch_size, num_workers=cores, shuffle=False)
-    test_loader_aug = DataLoader(test_dataset_aug, batch_size=batch_size, num_workers=cores, shuffle=False)
 
     model = SiameseNetwork().to(device)
     summary(model, [(1, 112, 112), (1, 112, 112)])
@@ -238,13 +233,9 @@ if __name__ == '__main__':
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.1)
     scaler = torch.amp.GradScaler()
 
-    train(model, train_loader, val_loader, val_loader_aug, criterion, optimizer, epochs=epochs)
+    train(model, train_loader, val_loader, criterion, optimizer, epochs=epochs)
 
     test_loss, test_accuracy = evaluate(model, test_loader, criterion)
     print(f'Test Loss: {test_loss}, Test Accuracy: {test_accuracy}')
     wandb.log({"test_loss": test_loss, "test_accuracy": test_accuracy})
-    
-    test_loss_aug, test_accuracy_aug = evaluate(model, test_loader_aug, criterion)
-    print(f'Aug Test Loss: {test_loss_aug}, Aug Test Accuracy: {test_accuracy_aug}')
-    wandb.log({"aug_test_loss": test_loss_aug, "aug_test_accuracy": test_accuracy_aug})
-    torch.save(model.state_dict(), 'networks_lennart/final_network.pth')
+    torch.save(model.state_dict(), 'networks/final_network.pth')
